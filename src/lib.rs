@@ -1,7 +1,7 @@
 #![no_std]
 
 use core::marker::PhantomData;
-use embedded_hal_async::{delay::DelayNs, i2c::I2c, spi::SpiDevice};
+use embedded_hal::{delay::DelayNs, i2c::I2c, spi::SpiDevice};
 use nalgebra::Vector3;
 
 mod reg;
@@ -59,15 +59,14 @@ pub struct IcmBusSpi<SPI> {
 }
 
 // Trait to allow for generic behavior across I2c or Spi usage
-#[allow(async_fn_in_trait)]
 pub trait BusTransfer<E>
 where
     E: Into<IcmError<E>>,
 {
     type Inner;
     fn destroy(self) -> Self::Inner;
-    async fn bus_transfer(&mut self, write: &[u8], read: &mut [u8]) -> Result<(), E>;
-    async fn bus_write(&mut self, write: &[u8]) -> Result<(), E>;
+    fn bus_transfer(&mut self, write: &[u8], read: &mut [u8]) -> Result<(), E>;
+    fn bus_write(&mut self, write: &[u8]) -> Result<(), E>;
 }
 
 // Implementation of bus trait for I2c
@@ -82,14 +81,12 @@ where
         self.bus_inner
     }
 
-    async fn bus_transfer(&mut self, write: &[u8], read: &mut [u8]) -> Result<(), E> {
-        self.bus_inner
-            .write_read(self.address.get(), write, read)
-            .await
+    fn bus_transfer(&mut self, write: &[u8], read: &mut [u8]) -> Result<(), E> {
+        self.bus_inner.write_read(self.address.get(), write, read)
     }
 
-    async fn bus_write(&mut self, write: &[u8]) -> Result<(), E> {
-        self.bus_inner.write(self.address.get(), write).await
+    fn bus_write(&mut self, write: &[u8]) -> Result<(), E> {
+        self.bus_inner.write(self.address.get(), write)
     }
 }
 
@@ -105,12 +102,12 @@ where
         self.bus_inner
     }
 
-    async fn bus_transfer(&mut self, write: &[u8], read: &mut [u8]) -> Result<(), E> {
-        self.bus_inner.transfer(read, write).await
+    fn bus_transfer(&mut self, write: &[u8], read: &mut [u8]) -> Result<(), E> {
+        self.bus_inner.transfer(read, write)
     }
 
-    async fn bus_write(&mut self, write: &[u8]) -> Result<(), E> {
-        self.bus_inner.write(write).await
+    fn bus_write(&mut self, write: &[u8]) -> Result<(), E> {
+        self.bus_inner.write(write)
     }
 }
 
@@ -336,10 +333,10 @@ where
     */
 
     /// Initializes the IMU with accelerometer and gyroscope
-    pub async fn initialize_6dof(
+    pub fn initialize_6dof(
         mut self,
     ) -> Result<Icm20948<BUS, MagDisabled, Init, DELAY, E>, (IcmError<E>, BUS::Inner)> {
-        match self.setup_acc_gyr().await {
+        match self.setup_acc_gyr() {
             Ok(_) => Ok(Icm20948 {
                 mag_state: MagDisabled,
                 init_state: PhantomData::<Init>,
@@ -354,15 +351,12 @@ where
     }
 
     /// Initializes the IMU with accelerometer, gyroscope and magnetometer
-    pub async fn initialize_9dof(
+    pub fn initialize_9dof(
         mut self,
     ) -> Result<Icm20948<BUS, MagEnabled, Init, DELAY, E>, (IcmError<E>, BUS::Inner)> {
-        let setup = async {
-            self.setup_acc_gyr().await?;
-            self.setup_mag().await
-        };
+        let setup = self.setup_acc_gyr().and(self.setup_mag());
 
-        match setup.await {
+        match setup {
             Ok(_) => Ok(Icm20948 {
                 mag_state: MagEnabled::uncralibrated(),
                 init_state: PhantomData::<Init>,
@@ -377,69 +371,68 @@ where
     }
 
     /// Setup accelerometer and gyroscope according to config
-    async fn setup_acc_gyr(&mut self) -> Result<(), IcmError<E>> {
+    fn setup_acc_gyr(&mut self) -> Result<(), IcmError<E>> {
         // Ensure known-good state
-        self.device_reset().await?;
+        self.device_reset()?;
 
         // Initially set user bank by force, and check identity
-        self.set_user_bank(&Bank0::WhoAmI, true).await?;
-        let [whoami] = self.read_from(Bank0::WhoAmI).await?;
+        self.set_user_bank(&Bank0::WhoAmI, true)?;
+        let [whoami] = self.read_from(Bank0::WhoAmI)?;
 
         if whoami != 0xEA {
             return Err(IcmError::ImuSetupError);
         }
 
         // Disable sleep mode and set to auto select clock source
-        self.write_to(Bank0::PwrMgmt1, 0x01).await?;
+        self.write_to(Bank0::PwrMgmt1, 0x01)?;
 
         // Set gyro and accel ranges
-        self.set_acc_range(self.config.acc_range).await?;
-        self.set_gyr_range(self.config.gyr_range).await?;
+        self.set_acc_range(self.config.acc_range)?;
+        self.set_gyr_range(self.config.gyr_range)?;
 
         // Apply digital lowpass filter settings
-        self.set_gyr_dlp(self.config.gyr_dlp).await?;
-        self.set_acc_dlp(self.config.acc_dlp).await?;
+        self.set_gyr_dlp(self.config.gyr_dlp)?;
+        self.set_acc_dlp(self.config.acc_dlp)?;
 
         // Set gyro and accel output data rate
-        self.set_acc_odr(self.config.acc_odr).await?;
-        self.set_gyr_odr(self.config.gyr_odr).await?;
+        self.set_acc_odr(self.config.acc_odr)?;
+        self.set_gyr_odr(self.config.gyr_odr)?;
 
         Ok(())
     }
 
     /// Setup magnetometer in continuous mode
-    async fn setup_mag(&mut self) -> Result<(), IcmError<E>> {
+    fn setup_mag(&mut self) -> Result<(), IcmError<E>> {
         // Ensure known-good state
-        self.mag_reset().await?;
+        self.mag_reset()?;
 
         // Setup magnetometer (i2c slave) clock (default 400 kHz)
-        self.write_to(Bank3::I2cMstCtrl, 0x07).await?;
+        self.write_to(Bank3::I2cMstCtrl, 0x07)?;
 
         // Enable I2C master mode for magnetometer
-        self.enable_i2c_master(true).await?;
+        self.enable_i2c_master(true)?;
 
         // Configure slave address as magnetometer
-        self.write_to(Bank3::I2cSlv0Addr, MAGNET_ADDR).await?;
+        self.write_to(Bank3::I2cSlv0Addr, MAGNET_ADDR)?;
 
         // Verify magnetometer identifier
-        let [whoami] = self.mag_read_from(MagBank::DeviceId).await?;
+        let [whoami] = self.mag_read_from(MagBank::DeviceId)?;
 
         if whoami != 9 {
             return Err(IcmError::MagSetupError);
         }
 
         // Reset magnetometer
-        self.mag_reset().await?;
+        self.mag_reset()?;
 
         // Set magnetometer to continuous mode 4 (100 Hz)
-        self.mag_write_to(MagBank::Control2.reg(), 0b01000).await?;
+        self.mag_write_to(MagBank::Control2.reg(), 0b01000)?;
 
         // Set slave register to read from
-        self.write_to(Bank3::I2cSlv0Reg, MagBank::XDataLow.reg())
-            .await?;
+        self.write_to(Bank3::I2cSlv0Reg, MagBank::XDataLow.reg())?;
 
         // Set expected read size
-        self.write_to(Bank3::I2cSlv0Ctrl, 1 << 7 | 8).await?;
+        self.write_to(Bank3::I2cSlv0Ctrl, 1 << 7 | 8)?;
 
         Ok(())
     }
@@ -451,120 +444,113 @@ where
     DELAY: DelayNs,
 {
     /// Reset accelerometer / gyroscope module
-    pub async fn device_reset(&mut self) -> Result<(), E> {
-        self.delay.delay_ms(20).await;
-        self.write_to_flag(Bank0::PwrMgmt1, 1 << 7, 1 << 7).await?;
-        self.delay.delay_ms(50).await;
+    pub fn device_reset(&mut self) -> Result<(), E> {
+        self.delay.delay_ms(20);
+        self.write_to_flag(Bank0::PwrMgmt1, 1 << 7, 1 << 7)?;
+        self.delay.delay_ms(50);
         Ok(())
     }
 
     /// Enables main ICM module to act as I2C master (eg. for magnetometer)
-    async fn enable_i2c_master(&mut self, enable: bool) -> Result<(), E> {
+    fn enable_i2c_master(&mut self, enable: bool) -> Result<(), E> {
         self.write_to_flag(Bank0::UserCtrl, u8::from(enable) << 5, 1 << 5)
-            .await
     }
 
     /// Resets I2C master module
-    async fn reset_i2c_master(&mut self) -> Result<(), E> {
-        self.write_to_flag(Bank0::UserCtrl, 1 << 1, 1 << 1).await
+    fn reset_i2c_master(&mut self) -> Result<(), E> {
+        self.write_to_flag(Bank0::UserCtrl, 1 << 1, 1 << 1)
     }
 
     /// Ensure correct user bank for given register
-    async fn set_user_bank<R: Register + Copy>(&mut self, bank: &R, force: bool) -> Result<(), E> {
+    fn set_user_bank<R: Register + Copy>(&mut self, bank: &R, force: bool) -> Result<(), E> {
         if (self.user_bank != bank.bank()) || force {
             self.bus
-                .bus_write(&[REG_BANK_SEL, (bank.bank() as u8) << 4])
-                .await?;
+                .bus_write(&[REG_BANK_SEL, (bank.bank() as u8) << 4])?;
             self.user_bank = bank.bank();
         }
         Ok(())
     }
 
     /// Read a const number `N` of bytes from the requested register
-    async fn read_from<const N: usize, R: Register + Copy>(
-        &mut self,
-        cmd: R,
-    ) -> Result<[u8; N], E> {
+    fn read_from<const N: usize, R: Register + Copy>(&mut self, cmd: R) -> Result<[u8; N], E> {
         let mut buf = [0u8; N];
-        self.set_user_bank(&cmd, false).await?;
-        self.bus.bus_transfer(&[cmd.reg()], &mut buf).await?;
+        self.set_user_bank(&cmd, false)?;
+        self.bus.bus_transfer(&[cmd.reg()], &mut buf)?;
         Ok(buf)
     }
 
     /// Write a single byte to the requeste register
-    async fn write_to<R: Register + Copy>(&mut self, cmd: R, data: u8) -> Result<(), E> {
-        self.set_user_bank(&cmd, false).await?;
-        self.bus.bus_write(&[cmd.reg(), data]).await
+    fn write_to<R: Register + Copy>(&mut self, cmd: R, data: u8) -> Result<(), E> {
+        self.set_user_bank(&cmd, false)?;
+        self.bus.bus_write(&[cmd.reg(), data])
     }
 
     /// Write to a register, but only overwrite the parts corresponding to the flag byte
-    async fn write_to_flag<R>(&mut self, cmd: R, data: u8, flag: u8) -> Result<(), E>
+    fn write_to_flag<R>(&mut self, cmd: R, data: u8, flag: u8) -> Result<(), E>
     where
         R: Register + Copy + Clone,
     {
-        let [mut register] = self.read_from(cmd).await?;
+        let [mut register] = self.read_from(cmd)?;
         register = (register & !flag) | (data & flag);
-        self.write_to(cmd, register).await
+        self.write_to(cmd, register)
     }
 
     /// Put the magnetometer into read mode
-    async fn set_mag_read(&mut self) -> Result<(), E> {
-        let [mut reg] = self.read_from(Bank3::I2cSlv0Addr).await?;
+    fn set_mag_read(&mut self) -> Result<(), E> {
+        let [mut reg] = self.read_from(Bank3::I2cSlv0Addr)?;
         reg &= 0b0111_1111;
         reg |= 1 << 7;
-        self.write_to(Bank3::I2cSlv0Addr, reg).await
+        self.write_to(Bank3::I2cSlv0Addr, reg)
     }
 
     /// Put the magnetometer into write mode
-    async fn set_mag_write(&mut self) -> Result<(), E> {
-        let [mut reg] = self.read_from(Bank3::I2cSlv0Addr).await?;
+    fn set_mag_write(&mut self) -> Result<(), E> {
+        let [mut reg] = self.read_from(Bank3::I2cSlv0Addr)?;
         reg &= 0b0111_1111;
-        self.write_to(Bank3::I2cSlv0Addr, reg).await
+        self.write_to(Bank3::I2cSlv0Addr, reg)
     }
 
     /// Write `data` to the magnetometer module in `reg` (20 ms non-blocking delays)
-    async fn mag_write_to(&mut self, reg: u8, data: u8) -> Result<(), E> {
-        self.set_mag_write().await?;
-        self.delay.delay_ms(10).await;
-        self.write_to(Bank3::I2cSlv0Reg, reg).await?;
-        self.write_to(Bank3::I2cSlv0Do, data).await?;
-        self.write_to(Bank3::I2cSlv0Ctrl, 1 << 7 | 1).await?;
-        self.delay.delay_ms(10).await;
-        self.set_mag_read().await
+    fn mag_write_to(&mut self, reg: u8, data: u8) -> Result<(), E> {
+        self.set_mag_write()?;
+        self.delay.delay_ms(10);
+        self.write_to(Bank3::I2cSlv0Reg, reg)?;
+        self.write_to(Bank3::I2cSlv0Do, data)?;
+        self.write_to(Bank3::I2cSlv0Ctrl, 1 << 7 | 1)?;
+        self.delay.delay_ms(10);
+        self.set_mag_read()
     }
 
     /// Read a `N` bytes from the magnetometer in `reg` (20 ms non-blocking delays)
-    async fn mag_read_from<const N: usize>(&mut self, reg: MagBank) -> Result<[u8; N], E> {
-        self.set_mag_read().await?;
-        self.delay.delay_ms(10).await;
-        self.write_to(Bank3::I2cSlv0Reg, reg.reg()).await?;
-        self.write_to(Bank3::I2cSlv0Ctrl, 1 << 7 | N as u8).await?;
-        self.delay.delay_ms(10).await;
-        self.read_from(Bank0::ExtSlvSensData00).await
+    fn mag_read_from<const N: usize>(&mut self, reg: MagBank) -> Result<[u8; N], E> {
+        self.set_mag_read()?;
+        self.delay.delay_ms(10);
+        self.write_to(Bank3::I2cSlv0Reg, reg.reg())?;
+        self.write_to(Bank3::I2cSlv0Ctrl, 1 << 7 | N as u8)?;
+        self.delay.delay_ms(10);
+        self.read_from(Bank0::ExtSlvSensData00)
     }
 
     /// Reset magnetometer module ( 120 ms non-blocking delays)
-    async fn mag_reset(&mut self) -> Result<(), E> {
+    fn mag_reset(&mut self) -> Result<(), E> {
         // Control 3 register bit 1 resets magnetometer unit
-        self.mag_write_to(MagBank::Control3.reg(), 1).await?;
-        self.delay.delay_ms(100).await;
+        self.mag_write_to(MagBank::Control3.reg(), 1)?;
+        self.delay.delay_ms(100);
 
         // Reset i2c master module
-        self.reset_i2c_master().await
+        self.reset_i2c_master()
     }
 
     /// Configure acceleromter to measure with given range
-    pub async fn set_acc_range(&mut self, range: AccRange) -> Result<(), E> {
-        self.write_to_flag(Bank2::AccelConfig, (range as u8) << 1, 0b0110)
-            .await?;
+    pub fn set_acc_range(&mut self, range: AccRange) -> Result<(), E> {
+        self.write_to_flag(Bank2::AccelConfig, (range as u8) << 1, 0b0110)?;
         self.config.acc_range = range;
         Ok(())
     }
 
     /// Configure gyroscope to measure with given range
-    pub async fn set_gyr_range(&mut self, range: GyrRange) -> Result<(), E> {
-        self.write_to_flag(Bank2::GyroConfig1, (range as u8) << 1, 0b0110)
-            .await?;
+    pub fn set_gyr_range(&mut self, range: GyrRange) -> Result<(), E> {
+        self.write_to_flag(Bank2::GyroConfig1, (range as u8) << 1, 0b0110)?;
         self.config.gyr_range = range;
         Ok(())
     }
@@ -580,37 +566,33 @@ where
     }
 
     /// Set (or disable) accelerometer digital low-pass filter
-    pub async fn set_acc_dlp(&mut self, acc_dlp: AccDlp) -> Result<(), E> {
+    pub fn set_acc_dlp(&mut self, acc_dlp: AccDlp) -> Result<(), E> {
         if AccDlp::Disabled == acc_dlp {
             self.write_to_flag(Bank2::AccelConfig, 0u8, 0b0011_1001)
-                .await
         } else {
             self.write_to_flag(Bank2::AccelConfig, (acc_dlp as u8) << 3 | 1, 0b0011_1001)
-                .await
         }
     }
 
     /// Set (or disable) gyroscope digital low-pass filter
-    pub async fn set_gyr_dlp(&mut self, gyr_dlp: GyrDlp) -> Result<(), E> {
+    pub fn set_gyr_dlp(&mut self, gyr_dlp: GyrDlp) -> Result<(), E> {
         if GyrDlp::Disabled == gyr_dlp {
             self.write_to_flag(Bank2::GyroConfig1, 0u8, 0b0011_1001)
-                .await
         } else {
             self.write_to_flag(Bank2::GyroConfig1, (gyr_dlp as u8) << 3 | 1, 0b0011_1001)
-                .await
         }
     }
 
     /// Set accelerometer output data rate. Value will be clamped above 4095.
-    pub async fn set_acc_odr(&mut self, acc_odr: u16) -> Result<(), E> {
+    pub fn set_acc_odr(&mut self, acc_odr: u16) -> Result<(), E> {
         let [msb, lsb] = acc_odr.clamp(0, 0xFFF).to_be_bytes();
-        self.write_to(Bank2::AccelSmplrtDiv1, msb).await?;
-        self.write_to(Bank2::AccelSmplrtDiv2, lsb).await
+        self.write_to(Bank2::AccelSmplrtDiv1, msb)?;
+        self.write_to(Bank2::AccelSmplrtDiv2, lsb)
     }
 
     /// Set gyroscope output data rate.
-    pub async fn set_gyr_odr(&mut self, gyr_odr: u8) -> Result<(), E> {
-        self.write_to(Bank2::GyroSmplrtDiv, gyr_odr).await
+    pub fn set_gyr_odr(&mut self, gyr_odr: u8) -> Result<(), E> {
+        self.write_to(Bank2::GyroSmplrtDiv, gyr_odr)
     }
 }
 
@@ -643,24 +625,24 @@ where
     }
 
     /// Get vector of scaled magnetometer values
-    pub async fn read_mag(&mut self) -> Result<Vector3<f32>, E> {
-        let mut mag = self.read_mag_unscaled().await?.map(|x| (x as f32)).into();
+    pub fn read_mag(&mut self) -> Result<Vector3<f32>, E> {
+        let mut mag = self.read_mag_unscaled()?.map(|x| (x as f32)).into();
         self.apply_mag_calibration(&mut mag);
 
         Ok(mag)
     }
 
     /// Get array of unscaled accelerometer values
-    pub async fn read_mag_unscaled(&mut self) -> Result<[i16; 3], E> {
-        let raw: [u8; 6] = self.read_from(Bank0::ExtSlvSensData00).await?;
+    pub fn read_mag_unscaled(&mut self) -> Result<[i16; 3], E> {
+        let raw: [u8; 6] = self.read_from(Bank0::ExtSlvSensData00)?;
         let mag = collect_3xi16_mag(raw);
 
         Ok(mag)
     }
 
     /// Get scaled measurement for accelerometer, gyroscope and magnetometer, and temperature
-    pub async fn read_9dof(&mut self) -> Result<Data9Dof<f32>, E> {
-        let raw: [u8; 20] = self.read_from(Bank0::AccelXoutH).await?;
+    pub fn read_9dof(&mut self) -> Result<Data9Dof<f32>, E> {
+        let raw: [u8; 20] = self.read_from(Bank0::AccelXoutH)?;
         let [axh, axl, ayh, ayl, azh, azl, gxh, gxl, gyh, gyl, gzh, gzl, tph, tpl, mxl, mxh, myl, myh, mzl, mzh] =
             raw;
 
@@ -674,8 +656,8 @@ where
     }
 
     /// Get unscaled measurements for accelerometer and gyroscope, and temperature
-    pub async fn read_9dof_unscaled(&mut self) -> Result<Data9Dof<i16>, E> {
-        let raw: [u8; 20] = self.read_from(Bank0::AccelXoutH).await?;
+    pub fn read_9dof_unscaled(&mut self) -> Result<Data9Dof<i16>, E> {
+        let raw: [u8; 20] = self.read_from(Bank0::AccelXoutH)?;
         let [axh, axl, ayh, ayl, azh, azl, gxh, gxl, gyh, gyl, gzh, gzl, tph, tpl, mxl, mxh, myl, myh, mzl, mzh] =
             raw;
 
@@ -720,38 +702,36 @@ where
     }
 
     /// Get array of unscaled accelerometer values
-    pub async fn read_acc_unscaled(&mut self) -> Result<Vector3<i16>, E> {
-        let raw = self.read_from(Bank0::AccelXoutH).await?;
+    pub fn read_acc_unscaled(&mut self) -> Result<Vector3<i16>, E> {
+        let raw = self.read_from(Bank0::AccelXoutH)?;
         Ok(collect_3xi16(raw).into())
     }
 
     /// Get array of scaled accelerometer values
-    pub async fn read_acc(&mut self) -> Result<Vector3<f32>, E> {
+    pub fn read_acc(&mut self) -> Result<Vector3<f32>, E> {
         let acc = self
-            .read_acc_unscaled()
-            .await?
+            .read_acc_unscaled()?
             .map(|x| f32::from(x) * self.acc_scalar());
         Ok(acc)
     }
 
     /// Get array of unscaled gyroscope values
-    pub async fn read_gyr_unscaled(&mut self) -> Result<Vector3<i16>, E> {
-        let raw = self.read_from(Bank0::GyroXoutH).await?;
+    pub fn read_gyr_unscaled(&mut self) -> Result<Vector3<i16>, E> {
+        let raw = self.read_from(Bank0::GyroXoutH)?;
         Ok(collect_3xi16(raw).into())
     }
 
     /// Get array of scaled gyroscope values
-    pub async fn read_gyr(&mut self) -> Result<Vector3<f32>, E> {
+    pub fn read_gyr(&mut self) -> Result<Vector3<f32>, E> {
         let gyr = self
-            .read_gyr_unscaled()
-            .await?
+            .read_gyr_unscaled()?
             .map(|x| f32::from(x) * self.gyr_scalar());
         Ok(gyr)
     }
 
     /// Get scaled measurements for accelerometer and gyroscope, and temperature
-    pub async fn read_6dof(&mut self) -> Result<Data6Dof<f32>, E> {
-        let raw: [u8; 14] = self.read_from(Bank0::AccelXoutH).await?;
+    pub fn read_6dof(&mut self) -> Result<Data6Dof<f32>, E> {
+        let raw: [u8; 14] = self.read_from(Bank0::AccelXoutH)?;
         let [axh, axl, ayh, ayl, azh, azl, gxh, gxl, gyh, gyl, gzh, gzl, tph, tpl] = raw;
 
         let acc = self.scaled_acc_from_bytes([axh, axl, ayh, ayl, azh, azl]);
@@ -763,8 +743,8 @@ where
     }
 
     /// Get unscaled measurements for accelerometer and gyroscope, and temperature
-    pub async fn read_6dof_unscaled(&mut self) -> Result<Data6Dof<i16>, E> {
-        let raw: [u8; 14] = self.read_from(Bank0::AccelXoutH).await?;
+    pub fn read_6dof_unscaled(&mut self) -> Result<Data6Dof<i16>, E> {
+        let raw: [u8; 14] = self.read_from(Bank0::AccelXoutH)?;
         let [axh, axl, ayh, ayl, azh, azl, gxh, gxl, gyh, gyl, gzh, gzl, tph, tpl] = raw;
 
         let acc = collect_3xi16([axh, axl, ayh, ayl, azh, azl]).into();
@@ -776,55 +756,47 @@ where
     }
 
     /// Collects and averages `num` sampels for gyro calibration and saves them on-chip
-    pub async fn gyr_calibrate(&mut self, num: usize) -> Result<(), E> {
+    pub fn gyr_calibrate(&mut self, num: usize) -> Result<(), E> {
         let mut offset: Vector3<i32> = Vector3::default();
         for _ in 0..num {
-            offset += self.read_gyr_unscaled().await?.map(|x| x as i32);
-            self.delay.delay_ms(10).await;
+            offset += self.read_gyr_unscaled()?.map(|x| x as i32);
+            self.delay.delay_ms(10);
         }
 
         self.set_gyr_offsets(offset.map(|x| { x / num as i32 } as i16))
-            .await
     }
 
     /// Set gyroscope calibration offsets by writing them to the IMU
-    pub async fn set_gyr_offsets(&mut self, offsets: Vector3<i16>) -> Result<(), E> {
+    pub fn set_gyr_offsets(&mut self, offsets: Vector3<i16>) -> Result<(), E> {
         let [[xh, xl], [yh, yl], [zh, zl]]: [[u8; 2]; 3] =
             offsets.map(|x| (-x).to_be_bytes()).into();
 
-        self.set_user_bank(&Bank2::XgOffsUsrh, false).await?;
+        self.set_user_bank(&Bank2::XgOffsUsrh, false)?;
 
-        self.bus
-            .bus_write(&[Bank2::XgOffsUsrh.reg(), xh, xl])
-            .await?;
-        self.bus
-            .bus_write(&[Bank2::YgOffsUsrh.reg(), yh, yl])
-            .await?;
-        self.bus
-            .bus_write(&[Bank2::ZgOffsUsrh.reg(), zh, zl])
-            .await?;
+        self.bus.bus_write(&[Bank2::XgOffsUsrh.reg(), xh, xl])?;
+        self.bus.bus_write(&[Bank2::YgOffsUsrh.reg(), yh, yl])?;
+        self.bus.bus_write(&[Bank2::ZgOffsUsrh.reg(), zh, zl])?;
 
         Ok(())
     }
 
     /// Set accelerometer calibration offsets by writing them to the IMU
-    pub async fn set_acc_offsets(&mut self, offsets: Vector3<i16>) -> Result<(), E> {
+    pub fn set_acc_offsets(&mut self, offsets: Vector3<i16>) -> Result<(), E> {
         let [[xh, xl], [yh, yl], [zh, zl]]: [[u8; 2]; 3] =
             offsets.map(|x| (-x).to_be_bytes()).into();
 
-        self.set_user_bank(&Bank2::XgOffsUsrh, false).await?;
+        self.set_user_bank(&Bank2::XgOffsUsrh, false)?;
 
-        self.bus.bus_write(&[Bank1::XaOffsH.reg(), xh, xl]).await?;
-        self.bus.bus_write(&[Bank1::YaOffsH.reg(), yh, yl]).await?;
-        self.bus.bus_write(&[Bank1::ZaOffsH.reg(), zh, zl]).await?;
+        self.bus.bus_write(&[Bank1::XaOffsH.reg(), xh, xl])?;
+        self.bus.bus_write(&[Bank1::YaOffsH.reg(), yh, yl])?;
+        self.bus.bus_write(&[Bank1::ZaOffsH.reg(), zh, zl])?;
 
         Ok(())
     }
 
     /// Returns the number of new readings in FIFO buffer
-    pub async fn new_data_ready(&mut self) -> u8 {
+    pub fn new_data_ready(&mut self) -> u8 {
         self.read_from::<1, _>(Bank0::DataRdyStatus)
-            .await
             .map_or(0, |[b]| b & 0b1111)
     }
 

@@ -7,7 +7,7 @@ authors = ["Peter Krull"]
 license = "MIT"
 repository = "https://github.com/peterkrull/icm20948-async"
 readme = "README.md"
-keywords = ["embedded", "embedded-hal", "async", "no_std", "icm20948"]
+keywords = ["embedded", "embedded-hal", "no_std", "icm20948"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -16,7 +16,7 @@ align-mag = []
 serde = ["dep:serde"]
 
 [dependencies]
-embedded-hal-async = "1.0.0"
+embedded-hal = "1.0.0"
 nalgebra = { version = ">0.30.0", default-features = false, features = [
     "libm",
 ] }
