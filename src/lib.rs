@@ -1,7 +1,11 @@
 #![no_std]
 
 use core::marker::PhantomData;
-use embedded_hal::{delay::DelayNs, i2c::I2c, spi::SpiDevice};
+use embedded_hal::{
+    delay::DelayNs,
+    i2c::{I2c, Operation as I2cOperation},
+    spi::{Operation as SpiOperation, SpiDevice},
+};
 use nalgebra::Vector3;
 
 mod reg;
@@ -65,8 +69,8 @@ where
 {
     type Inner;
     fn destroy(self) -> Self::Inner;
-    fn bus_transfer(&mut self, write: &[u8], read: &mut [u8]) -> Result<(), E>;
-    fn bus_write(&mut self, write: &[u8]) -> Result<(), E>;
+    fn bus_read(&mut self, register: u8, read: &mut [u8]) -> Result<(), E>;
+    fn bus_write(&mut self, register: u8, write: &[u8]) -> Result<(), E>;
 }
 
 // Implementation of bus trait for I2c
@@ -81,11 +85,16 @@ where
         self.bus_inner
     }
 
-    fn bus_transfer(&mut self, write: &[u8], read: &mut [u8]) -> Result<(), E> {
-        self.bus_inner.write_read(self.address.get(), write, read)
+    fn bus_read(&mut self, register: u8, read: &mut [u8]) -> Result<(), E> {
+        self.bus_inner
+            .write_read(self.address.get(), &[register], read)
     }
 
-    fn bus_write(&mut self, write: &[u8]) -> Result<(), E> {
+    fn bus_write(&mut self, register: u8, write: &[u8]) -> Result<(), E> {
+        self.bus_inner.transaction(
+            self.address.get(),
+            &mut [I2cOperation::Write(&[register]), I2cOperation::Write(write)],
+        );
         self.bus_inner.write(self.address.get(), write)
     }
 }
@@ -102,12 +111,16 @@ where
         self.bus_inner
     }
 
-    fn bus_transfer(&mut self, write: &[u8], read: &mut [u8]) -> Result<(), E> {
-        self.bus_inner.transfer(read, write)
+    fn bus_read(&mut self, register: u8, read: &mut [u8]) -> Result<(), E> {
+        self.bus_inner.transaction(&mut [
+            SpiOperation::Write(&[register | 0x80]),
+            SpiOperation::Read(read),
+        ])
     }
 
-    fn bus_write(&mut self, write: &[u8]) -> Result<(), E> {
-        self.bus_inner.write(write)
+    fn bus_write(&mut self, register: u8, write: &[u8]) -> Result<(), E> {
+        self.bus_inner
+            .transaction(&mut [SpiOperation::Write(&[register]), SpiOperation::Write(write)])
     }
 }
 
@@ -465,7 +478,7 @@ where
     fn set_user_bank<R: Register + Copy>(&mut self, bank: &R, force: bool) -> Result<(), E> {
         if (self.user_bank != bank.bank()) || force {
             self.bus
-                .bus_write(&[REG_BANK_SEL, (bank.bank() as u8) << 4])?;
+                .bus_write(REG_BANK_SEL, &[(bank.bank() as u8) << 4])?;
             self.user_bank = bank.bank();
         }
         Ok(())
@@ -475,14 +488,14 @@ where
     fn read_from<const N: usize, R: Register + Copy>(&mut self, cmd: R) -> Result<[u8; N], E> {
         let mut buf = [0u8; N];
         self.set_user_bank(&cmd, false)?;
-        self.bus.bus_transfer(&[cmd.reg()], &mut buf)?;
+        self.bus.bus_read(cmd.reg(), &mut buf)?;
         Ok(buf)
     }
 
     /// Write a single byte to the requeste register
     fn write_to<R: Register + Copy>(&mut self, cmd: R, data: u8) -> Result<(), E> {
         self.set_user_bank(&cmd, false)?;
-        self.bus.bus_write(&[cmd.reg(), data])
+        self.bus.bus_write(cmd.reg(), &[data])
     }
 
     /// Write to a register, but only overwrite the parts corresponding to the flag byte
@@ -773,9 +786,9 @@ where
 
         self.set_user_bank(&Bank2::XgOffsUsrh, false)?;
 
-        self.bus.bus_write(&[Bank2::XgOffsUsrh.reg(), xh, xl])?;
-        self.bus.bus_write(&[Bank2::YgOffsUsrh.reg(), yh, yl])?;
-        self.bus.bus_write(&[Bank2::ZgOffsUsrh.reg(), zh, zl])?;
+        self.bus.bus_write(Bank2::XgOffsUsrh.reg(), &[xh, xl])?;
+        self.bus.bus_write(Bank2::YgOffsUsrh.reg(), &[yh, yl])?;
+        self.bus.bus_write(Bank2::ZgOffsUsrh.reg(), &[zh, zl])?;
 
         Ok(())
     }
@@ -785,11 +798,11 @@ where
         let [[xh, xl], [yh, yl], [zh, zl]]: [[u8; 2]; 3] =
             offsets.map(|x| (-x).to_be_bytes()).into();
 
-        self.set_user_bank(&Bank2::XgOffsUsrh, false)?;
+        self.set_user_bank(&Bank1::XaOffsH, false)?;
 
-        self.bus.bus_write(&[Bank1::XaOffsH.reg(), xh, xl])?;
-        self.bus.bus_write(&[Bank1::YaOffsH.reg(), yh, yl])?;
-        self.bus.bus_write(&[Bank1::ZaOffsH.reg(), zh, zl])?;
+        self.bus.bus_write(Bank1::XaOffsH.reg(), &[xh, xl])?;
+        self.bus.bus_write(Bank1::YaOffsH.reg(), &[yh, yl])?;
+        self.bus.bus_write(Bank1::ZaOffsH.reg(), &[zh, zl])?;
 
         Ok(())
     }
